@@ -42,6 +42,10 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # as execution.
 PYTHON_RE = re.compile(r"(?:.*/)?python(?:3(?:\.\d+)?)?\Z")
 PYTHON_FLAGS_RE = re.compile(r"-[bBdEIOPqRsSuvx]+\Z")
+# unittest.TestLoader._find_test_path checks this before applying -p.
+# A glob alone also matches names such as test_cli-smoke.py, which discovery
+# silently skips instead of importing.
+VALID_MODULE_NAME = re.compile(r"[_a-z]\w*\.py$", re.IGNORECASE)
 
 
 def shell_words(line):
@@ -132,6 +136,8 @@ def is_reached_discover(root, relpath, start, pattern):
     target = (root_dir / relpath).resolve()
     start_dir = (root_dir / start).resolve()
     if not start_dir.is_dir() or not start_dir.is_relative_to(root_dir) or not target.is_relative_to(start_dir):
+        return False
+    if not VALID_MODULE_NAME.match(target.name):
         return False
     if not is_registered_discover(target.name, [pattern]):
         return False

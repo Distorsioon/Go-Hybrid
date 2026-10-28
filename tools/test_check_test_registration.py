@@ -223,6 +223,55 @@ class RegistrationTests(unittest.TestCase):
         self.assertEqual([rel for rel, _ in guard.unregistered(root, text)],
                          ["tools/test_one.py"])
 
+    def test_discovery_skips_non_module_filenames_even_when_glob_matches(self):
+        """Use real discovery as the oracle, not just the guard's glob."""
+        for filename in ("test_bad-name.py", "test_bad.name.py", "test_bad name.py"):
+            with self.subTest(filename=filename):
+                root, text = self.build(
+                    "python3 -m unittest discover -s tools -p 'test_*.py'\n",
+                    ["tools/test_control.py", "tools/" + filename])
+                (root / "tools/test_control.py").write_text(
+                    "import unittest\nclass Control(unittest.TestCase):\n"
+                    "    def test_pass(self): pass\n", encoding="utf-8")
+                (root / "tools" / filename).write_text(
+                    "raise AssertionError('unimportable filename was executed')\n",
+                    encoding="utf-8")
+                actual = subprocess.run(
+                    [sys.executable, "-m", "unittest", "discover", "-s", "tools",
+                     "-p", "test_*.py"], cwd=root, capture_output=True, text=True,
+                    timeout=15)
+                self.assertEqual(actual.returncode, 0, actual.stderr)
+                self.assertIn("Ran 1 test", actual.stderr)
+                self.assertEqual([rel for rel, _ in guard.unregistered(root, text)],
+                                 ["tools/" + filename])
+
+    def test_discovery_keeps_valid_module_filenames(self):
+        root, text = self.build(
+            "python3 -m unittest discover -s tools -p 'test_*.py'\n",
+            ["tools/test_1.py", "tools/test_under_score.py", "tools/test_\u00e9.py"])
+        for path in (root / "tools").glob("test_*.py"):
+            path.write_text(
+                "import unittest\nclass Control(unittest.TestCase):\n"
+                "    def test_pass(self): pass\n", encoding="utf-8")
+        actual = subprocess.run(
+            [sys.executable, "-m", "unittest", "discover", "-s", "tools", "-p", "test_*.py"],
+            cwd=root, capture_output=True, text=True, timeout=15)
+        self.assertEqual(actual.returncode, 0, actual.stderr)
+        self.assertIn("Ran 3 tests", actual.stderr)
+        self.assertEqual(guard.unregistered(root, text), [])
+
+    def test_direct_script_need_not_have_a_module_filename(self):
+        root, text = self.build(
+            "python3 tests/test_bad-name.py\n", ["tests/test_bad-name.py"])
+        (root / "tests/test_bad-name.py").write_text(
+            "raise AssertionError('direct script was executed')\n", encoding="utf-8")
+        actual = subprocess.run(
+            [sys.executable, "tests/test_bad-name.py"], cwd=root,
+            capture_output=True, text=True, timeout=15)
+        self.assertNotEqual(actual.returncode, 0)
+        self.assertIn("direct script was executed", actual.stderr)
+        self.assertEqual(guard.unregistered(root, text), [])
+
     def test_actual_discovery_skips_failing_test_but_guard_must_reject_it(self):
         root, text = self.build(
             "python3 -m unittest discover -s tools/fuzz -p 'test_*.py'\n",
@@ -313,6 +362,11 @@ class GuardMisuseTests(unittest.TestCase):
             self.run_main("python3 -m unittest discover -s tools/fuzz -p 'test_*.py'\n",
                           ["tools/fuzz/test_control.py", "tools/test_orphan.py"]), 1)
 
+
+    def test_non_module_filename_exits_one(self):
+        self.assertEqual(
+            self.run_main("python3 -m unittest discover -s tools -p 'test_*.py'\n",
+                          ["tools/test_valid.py", "tools/test_bad-name.py"]), 1)
 
     def test_start_directory_escaping_repo_root_is_rejected(self):
         self.assertEqual(self.run_main("python3 -m unittest discover -s .. -p 'test_*.py'\n", ["tools/test_x.py"]), 1)
